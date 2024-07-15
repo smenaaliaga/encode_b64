@@ -1,0 +1,6 @@
+pyspark3 --master yarn --name IcebergTest --queue desarrollo \
+--jars hdfs:///libs/iceberg/iceberg-spark-runtime-3.2_2.12-0.13.1.jar,hdfs:///libs/iceberg/iceberg-core-0.13.1.jar,hdfs:///libs/iceberg/iceberg-api-0.13.1.jar,hdfs:///libs/iceberg/iceberg-common-0.13.1.jar,hdfs:///libs/iceberg/iceberg-hive-metastore-0.13.1.jar,hdfs:///libs/iceberg/iceberg-annotations-0.13.1.jar,hdfs:///libs/iceberg/iceberg-spark-0.13.1.jar \
+--conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+--conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog \
+--conf spark.sql.catalog.spark_catalog.type=hadoop \
+--conf spark.sql.catalog.spark_catalog.warehouse=hdfs:///path/to/warehouse
