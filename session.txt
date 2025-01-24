@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+YARN_RM_HOST="srvbigmaster"       # Cambia esto por el host del ResourceManager
+YARN_RM_PORT=8090                 # Puerto HTTPS
+INACTIVITY_THRESHOLD=900          # 15 minutos en segundos
+CHECK_INTERVAL=60                 # Intervalo entre chequeos (en segundos)
+
+while true; do
+  echo "Iniciando monitoreo de aplicaciones RUNNING en YARN..."
+
+  # 1. Obtener las aplicaciones en estado RUNNING desde la API REST
+  RUNNING_APPS_JSON=$(curl -s -k "https://${YARN_RM_HOST}:${YARN_RM_PORT}/ws/v1/cluster/apps?states=RUNNING")
+
+  # Verifica si la respuesta es válida JSON
+  if ! echo "$RUNNING_APPS_JSON" | jq empty > /dev/null 2>&1; then
+    echo "Error: La respuesta no es un JSON válido. Contenido recibido:"
+    echo "$RUNNING_APPS_JSON"
+    exit 1
+  fi
+
+  # Verifica si el campo "apps" es null
+  if [ "$(echo "$RUNNING_APPS_JSON" | jq -r '.apps')" == "null" ]; then
+    echo "No hay aplicaciones en estado RUNNING."
+    sleep "$CHECK_INTERVAL"
+    continue
+  fi
+
+  # 2. Parsear el JSON para obtener appId y trackingUrl
+  APPS=$(echo "$RUNNING_APPS_JSON" | jq -r '.apps.app[] | "\(.id) \(.trackingUrl)"')
+
+  # 3. Iterar sobre cada aplicación en RUNNING
+  for entry in $APPS; do
+    appId=$(echo "$entry" | awk '{print $1}')
+    trackingUrl=$(echo "$entry" | awk '{print $2}')
+
+    # Obtener los jobs en ejecución desde la Spark UI
+    JOBS_JSON=$(curl -s -k "${trackingUrl}/api/v1/applications/${appId}/jobs")
+    if [ -z "$JOBS_JSON" ]; then
+      echo "No se pudo obtener información de jobs para la aplicación $appId."
+      continue
+    fi
+
+    # Contar los jobs en estado RUNNING
+    RUNNING_JOBS=$(echo "$JOBS_JSON" | jq '[.[] | select(.status=="RUNNING")] | length')
+
+    # Obtener el tiempo de finalización del último job completado (en timestamp)
+    LAST_COMPLETED=$(echo "$JOBS_JSON" | jq -r '[.[] | select(.status=="SUCCEEDED" or .status=="FINISHED")] | max_by(.completionTime).completionTime')
+
+    # Si no hay jobs RUNNING y hay un tiempo de finalización, verificar inactividad
+    if [ "$RUNNING_JOBS" -eq 0 ] && [ "$LAST_COMPLETED" != "null" ]; then
+      # Convertir LAST_COMPLETED a epoch (de formato ISO8601 a segundos)
+      LAST_COMPLETED_EPOCH=$(date -d "$LAST_COMPLETED" +%s)
+      CURRENT_TIME_EPOCH=$(date +%s)
+
+      # Calcular la diferencia de tiempo
+      TIME_DIFF=$((CURRENT_TIME_EPOCH - LAST_COMPLETED_EPOCH))
+
+      # Si la diferencia supera el umbral, matar la aplicación
+      if [ "$TIME_DIFF" -gt "$INACTIVITY_THRESHOLD" ]; then
+        echo "Aplicación $appId inactiva por más de $INACTIVITY_THRESHOLD segundos. Matándola..."
+        yarn application -kill "$appId"
+      else
+        echo "Aplicación $appId aún dentro del límite de inactividad."
+      fi
+    else
+      echo "Aplicación $appId tiene jobs en ejecución o no hay datos válidos de finalización."
+    fi
+  done
+
+  # Esperar antes del siguiente chequeo
+  echo "Esperando $CHECK_INTERVAL segundos antes del próximo chequeo..."
+  sleep "$CHECK_INTERVAL"
+done
