@@ -26,12 +26,11 @@ while true; do
   fi
 
   # 2. Parsear el JSON para obtener appId y trackingUrl
-  APPS=$(echo "$RUNNING_APPS_JSON" | jq -r '.apps.app[] | "\(.id) \(.trackingUrl)"')
+  APPS=$(echo "$RUNNING_APPS_JSON" | jq -r '.apps.app[] | "\(.id) \(.trackingUrl) \(.startedTime)"')
 
   # 3. Iterar sobre cada aplicación en RUNNING
-  for entry in $APPS; do
-    appId=$(echo "$entry" | awk '{print $1}')
-    trackingUrl=$(echo "$entry" | awk '{print $2}')
+  echo "$APPS" | while read -r appId trackingUrl startedTime; do
+    echo "Procesando aplicación: $appId"
 
     # Obtener los jobs en ejecución desde la Spark UI
     JOBS_JSON=$(curl -s -k "${trackingUrl}/api/v1/applications/${appId}/jobs")
@@ -46,24 +45,42 @@ while true; do
     # Obtener el tiempo de finalización del último job completado (en timestamp)
     LAST_COMPLETED=$(echo "$JOBS_JSON" | jq -r '[.[] | select(.status=="SUCCEEDED" or .status=="FINISHED")] | max_by(.completionTime).completionTime')
 
-    # Si no hay jobs RUNNING y hay un tiempo de finalización, verificar inactividad
-    if [ "$RUNNING_JOBS" -eq 0 ] && [ "$LAST_COMPLETED" != "null" ]; then
-      # Convertir LAST_COMPLETED a epoch (de formato ISO8601 a segundos)
+    # Si no hay jobs en ejecución ni completados, usa la fecha de creación
+    if [ "$RUNNING_JOBS" -eq 0 ] && { [ "$LAST_COMPLETED" == "null" ] || [ -z "$LAST_COMPLETED" ]; }; then
+      echo "Aplicación $appId no tiene jobs en ejecución ni completados. Usando fecha de creación."
+
+      # Convertir startedTime a epoch
+      STARTED_TIME_EPOCH=$(date -d "$startedTime" +%s)
+      CURRENT_TIME_EPOCH=$(date +%s)
+
+      # Calcular diferencia de tiempo
+      TIME_DIFF=$((CURRENT_TIME_EPOCH - STARTED_TIME_EPOCH))
+
+      if [ "$TIME_DIFF" -gt "$INACTIVITY_THRESHOLD" ]; then
+        echo "Aplicación $appId inactiva por más de $INACTIVITY_THRESHOLD segundos desde su creación. Matándola..."
+        yarn application -kill "$appId"
+      else
+        echo "Aplicación $appId aún dentro del límite de inactividad desde su creación."
+      fi
+      continue
+    fi
+
+    # Si hay jobs completados, calcular el tiempo desde el último job completado
+    if [ "$RUNNING_JOBS" -eq 0 ]; then
       LAST_COMPLETED_EPOCH=$(date -d "$LAST_COMPLETED" +%s)
       CURRENT_TIME_EPOCH=$(date +%s)
 
       # Calcular la diferencia de tiempo
       TIME_DIFF=$((CURRENT_TIME_EPOCH - LAST_COMPLETED_EPOCH))
 
-      # Si la diferencia supera el umbral, matar la aplicación
       if [ "$TIME_DIFF" -gt "$INACTIVITY_THRESHOLD" ]; then
-        echo "Aplicación $appId inactiva por más de $INACTIVITY_THRESHOLD segundos. Matándola..."
+        echo "Aplicación $appId inactiva por más de $INACTIVITY_THRESHOLD segundos desde el último job completado. Matándola..."
         yarn application -kill "$appId"
       else
-        echo "Aplicación $appId aún dentro del límite de inactividad."
+        echo "Aplicación $appId aún dentro del límite de inactividad desde el último job completado."
       fi
     else
-      echo "Aplicación $appId tiene jobs en ejecución o no hay datos válidos de finalización."
+      echo "Aplicación $appId tiene jobs en ejecución."
     fi
   done
 
