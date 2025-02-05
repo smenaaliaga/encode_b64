@@ -1,0 +1,32 @@
+import os
+import pandas as pd
+
+directorio = "ruta/a/tu/carpeta"
+
+archivos_dta = [f for f in os.listdir(directorio) if f.endswith(".dta")]
+
+for archivo in archivos_dta:
+    archivo_path = os.path.join(directorio, archivo)
+    print(f"\nProcesando archivo: {archivo}")
+
+    try:
+        df = pd.read_stata(archivo_path)
+
+        print(f"  Filas: {df.shape[0]}, Columnas: {df.shape[1]}")
+        print("  Columnas:")
+        print(df.columns.tolist())
+
+        # Detectar columnas de texto
+        columnas_texto = df.select_dtypes(include=['object']).columns
+
+        # Intentar decodificar correctamente cada columna de texto
+        for col in columnas_texto:
+            df[col] = df[col].astype(str).apply(lambda x: x.encode("latin1").decode("utf-8", "ignore") if isinstance(x, str) else x)
+
+        # Mostrar las primeras filas para verificar la decodificación
+        print(df.head())
+
+    except Exception as e:
+        print(f"  Error al leer el archivo: {e}")
+
+    print("-" * 60)
